@@ -1,56 +1,65 @@
-# app.py
-
-import streamlit as st
-import os
-import re
+from flask import Flask, render_template, request, jsonify
 import pickle
+import os
+import cv2
+import pytesseract
 
-# -----------------------------
-# Load model & vectorizer
-# -----------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+app = Flask(__name__)
 
-MODEL_PATH = os.path.join(BASE_DIR, "models", "ensemble_model.pkl")
-VECTORIZER_PATH = os.path.join(BASE_DIR, "models", "vectorizer.pkl")
+# LOAD FAKE NEWS MODEL
+model = pickle.load(open('models/model.pkl', 'rb'))
+vectorizer = pickle.load(open('models/vectorizer.pkl', 'rb'))
 
-with open(MODEL_PATH, "rb") as f:
-    model = pickle.load(f)
+# TESSERACT PATH
+if os.name == "nt":
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+else:
+    pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
-with open(VECTORIZER_PATH, "rb") as f:
-    vectorizer = pickle.load(f)
+def predict_news(text):
+    vector = vectorizer.transform([text])
+    pred = model.predict(vector)
+    return "REAL" if pred[0] == 1 else "FAKE"
 
-# -----------------------------
-# Text cleaning
-# -----------------------------
-def clean_text(text):
-    text = text.lower()
-    text = re.sub(r'[^a-z\s]', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+@app.route('/')
+def home():
+    return render_template('index.html')
 
-# -----------------------------
-# UI DESIGN
-# -----------------------------
-st.set_page_config(page_title="TruthLens", layout="centered")
+@app.route('/predict_text', methods=['POST'])
+def predict_text():
+    news = request.form['news']
+    result = predict_news(news)
+    return jsonify({"prediction": result})
 
-st.title("🕵️‍♂️ TruthLens")
-st.subheader("Ensemble-based Fake News Detection System")
-st.write("Paste a news article or headline below to check whether it is **FAKE or REAL**.")
+@app.route('/predict_image', methods=['POST'])
+def predict_image():
 
-news_input = st.text_area("📰 Enter News Text", height=200)
+    if 'image' not in request.files:
+        return jsonify({"error": "No image uploaded"})
 
-if st.button("🔍 Predict"):
-    if news_input.strip() == "":
-        st.warning("Please enter some news text.")
-    else:
-        cleaned = clean_text(news_input)
-        vectorized = vectorizer.transform([cleaned])
-        prediction = model.predict(vectorized)[0]
+    file = request.files['image']
 
-        if prediction.upper() == "FAKE":
-            st.error("🚨 This news is likely **FAKE**")
-        else:
-            st.success("✅ This news appears to be **REAL**")
+    if file.filename == '':
+        return jsonify({"error": "No selected file"})
 
-st.markdown("---")
-st.caption("Mini Project | TruthLens | NLP + Ensemble ML")
+    if not os.path.exists("uploads"):
+        os.makedirs("uploads")
+
+    path = os.path.join("uploads", file.filename)
+    file.save(path)
+
+    # OCR
+    img = cv2.imread(path)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    text = pytesseract.image_to_string(gray)
+
+    # Fake News
+    news_result = predict_news(text)
+
+    return jsonify({
+        "news_result": news_result,
+        "extracted_text": text
+    })
+
+if __name__ == '__main__':
+    app.run(debug=True)
